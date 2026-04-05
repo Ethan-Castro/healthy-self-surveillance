@@ -1,0 +1,14 @@
+.DS_Store
+node_modules
+dist
+.vite
+.cache
+.pytest_cache
+__pycache__
+.venv
+*.pyc
+services/inference/data
+apps/desktop/dist
+apps/desktop/.vite
+.gradle
+apps/android/.idea

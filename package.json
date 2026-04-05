@@ -1,0 +1,21 @@
+{
+  "name": "healthy-self-surveillance",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  },
+  "scripts": {
+    "dev": "concurrently -k \"pnpm inference:dev\" \"pnpm desktop:dev\"",
+    "desktop:dev": "pnpm --dir apps/desktop dev",
+    "desktop:build": "pnpm --dir apps/desktop build",
+    "desktop:typecheck": "pnpm --dir apps/desktop typecheck",
+    "inference:dev": "cd services/inference && uv run uvicorn focus_catcher.api:app --app-dir src --reload --port 8000",
+    "inference:test": "cd services/inference && uv run pytest"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
