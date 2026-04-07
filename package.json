@@ -13,6 +13,7 @@
     "desktop:build": "pnpm --dir apps/desktop build",
     "desktop:typecheck": "pnpm --dir apps/desktop typecheck",
     "inference:dev": "cd services/inference && uv run uvicorn focus_catcher.api:app --app-dir src --reload --port 8000",
+    "inference:benchmark": "cd services/inference && uv run focus-buddy-benchmark",
     "inference:test": "cd services/inference && uv run pytest"
   },
   "devDependencies": {

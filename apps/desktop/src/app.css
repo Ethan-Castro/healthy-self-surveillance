@@ -277,6 +277,61 @@ input:focus {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.library-list,
+.review-list {
+  display: grid;
+  gap: 10px;
+}
+
+.library-list {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.library-item,
+.toggle-pill {
+  width: 100%;
+  border-radius: 18px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--ink);
+  box-shadow: none;
+  text-align: left;
+}
+
+.library-item.selected,
+.toggle-pill.selected {
+  background: linear-gradient(180deg, #1d2734 0%, #111a24 100%);
+  color: #fff8f1;
+}
+
+.library-title,
+.library-meta {
+  display: block;
+}
+
+.library-title {
+  font-weight: 700;
+}
+
+.library-meta {
+  margin-top: 4px;
+  font-size: 0.84rem;
+  color: inherit;
+  opacity: 0.78;
+}
+
+.review-toggle-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.toggle-pill {
+  width: auto;
+  padding-inline: 14px;
+}
+
 .buddy-stage {
   display: grid;
   gap: 16px;
@@ -455,9 +510,66 @@ input:focus {
   border-radius: 20px;
 }
 
+.review-item {
+  display: grid;
+  grid-template-columns: 108px 1fr;
+  gap: 12px;
+  align-items: start;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(25, 35, 46, 0.06);
+  border-radius: 18px;
+  padding: 12px;
+}
+
+.review-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  object-fit: cover;
+  background: rgba(26, 37, 48, 0.08);
+}
+
+.review-thumb-empty {
+  display: grid;
+  place-items: center;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+}
+
+.review-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.review-copy p {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.review-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.review-topline span {
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.review-buddy-note {
+  color: var(--ink);
+}
+
+.review-reasons {
+  font-size: 0.84rem;
+}
+
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -516,5 +628,13 @@ input:focus {
   .button-grid,
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .review-item {
+    grid-template-columns: 1fr;
+  }
+
+  .review-toggle-row {
+    flex-direction: column;
   }
 }

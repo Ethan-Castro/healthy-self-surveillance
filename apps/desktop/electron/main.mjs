@@ -1,9 +1,25 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+ipcMain.handle("focus-buddy:api-request", async (_event, requestInit) => {
+  const response = await fetch(requestInit.url, {
+    method: requestInit.method,
+    headers: requestInit.headers,
+    body: requestInit.body ?? undefined,
+  });
+
+  const text = await response.text();
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    text,
+  };
+});
 
 function createWindow() {
   const window = new BrowserWindow({

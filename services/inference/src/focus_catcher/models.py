@@ -37,6 +37,11 @@ class ReviewMode(str, Enum):
     RESCAN = "rescan"
 
 
+class RuntimeProfile(str, Enum):
+    STANDARD = "standard"
+    HIGHER_ACCURACY = "higher_accuracy"
+
+
 def empty_label_counts() -> dict[str, int]:
     return {label.value: 0 for label in FocusLabel}
 
@@ -44,6 +49,10 @@ def empty_label_counts() -> dict[str, int]:
 class SetupStatus(BaseModel):
     ready: bool
     model_name: str = "gemma4:e2b"
+    runtime_profile: RuntimeProfile = RuntimeProfile.STANDARD
+    available_runtime_profiles: list[RuntimeProfile] = Field(
+        default_factory=lambda: [RuntimeProfile.STANDARD]
+    )
     mode: str = "ollama"
     message: str
     checked_at: datetime = Field(default_factory=utcnow)
@@ -52,6 +61,7 @@ class SetupStatus(BaseModel):
 class SessionConfig(BaseModel):
     session_name: str = "Focus Buddy Session"
     include_screen_analysis: bool = False
+    runtime_profile: RuntimeProfile = RuntimeProfile.STANDARD
     focused_review_cadence_ms: int = Field(default=2000, ge=500, le=10000)
     active_review_cadence_ms: int = Field(default=1000, ge=250, le=5000)
     temporary_review_window_sec: int = Field(default=600, ge=60, le=86400)
@@ -120,7 +130,10 @@ class SessionArtifacts(BaseModel):
 class SessionSnapshot(BaseModel):
     session_id: str
     session_name: str
+    created_at: datetime
+    updated_at: datetime
     status: SessionStatus
+    runtime_profile: RuntimeProfile
     current_label: FocusLabel
     short_reason: str
     companion_message: str
@@ -132,6 +145,14 @@ class SessionSnapshot(BaseModel):
     summary: SessionSummary = Field(default_factory=SessionSummary)
     recent_reviews: list[ReviewEntry] = Field(default_factory=list)
     can_rescan: bool = False
+    keyframe_count: int = 0
+    rescan_review_count: int = 0
+
+
+class SessionReviewDetail(BaseModel):
+    session: SessionSnapshot
+    live_timeline: list[ReviewEntry] = Field(default_factory=list)
+    rescan_timeline: list[ReviewEntry] = Field(default_factory=list)
 
 
 class RescanResult(BaseModel):
@@ -171,7 +192,10 @@ class SessionRecord(BaseModel):
         return SessionSnapshot(
             session_id=self.id,
             session_name=self.config.session_name,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
             status=self.status,
+            runtime_profile=self.config.runtime_profile,
             current_label=self.current_label,
             short_reason=self.short_reason,
             companion_message=self.companion_message,
@@ -183,4 +207,6 @@ class SessionRecord(BaseModel):
             summary=self.summary,
             recent_reviews=recent_reviews,
             can_rescan=self.status == SessionStatus.STOPPED and self.rescan_available,
+            keyframe_count=sum(1 for review in self.review_history if review.keyframe_path),
+            rescan_review_count=len(self.rescan_history),
         )

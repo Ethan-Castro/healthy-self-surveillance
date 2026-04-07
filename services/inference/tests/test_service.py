@@ -5,17 +5,20 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from focus_catcher.models import (
     FocusLabel,
     GemmaDecision,
     ReviewInput,
+    RuntimeProfile,
     SessionConfig,
     SetupStatus,
     TransitionRequest,
     utcnow,
 )
 from focus_catcher.service import FocusCatcherService
+from focus_catcher.api import app
 
 
 def frame_payload(data: bytes = b"fake-jpeg") -> str:
@@ -50,10 +53,15 @@ class SequenceGemmaAdapter:
         self.live_calls = 0
         self.rescan_calls = 0
 
-    def check_setup(self) -> SetupStatus:
+    def check_setup(self, runtime_profile: RuntimeProfile | None = None) -> SetupStatus:
         return SetupStatus(
             ready=self.ready,
-            model_name="gemma4:e2b",
+            model_name="gemma4:e4b" if runtime_profile == RuntimeProfile.HIGHER_ACCURACY else "gemma4:e2b",
+            runtime_profile=runtime_profile or RuntimeProfile.STANDARD,
+            available_runtime_profiles=[
+                RuntimeProfile.STANDARD,
+                RuntimeProfile.HIGHER_ACCURACY,
+            ],
             mode="test",
             message="ready" if self.ready else "gemma unavailable",
         )
@@ -101,6 +109,31 @@ def test_start_requires_ready_setup_and_recovers(tmp_path) -> None:
         adapter.ready = True
         started = service.start_session(session.session_id, TransitionRequest())
         assert started.status.value == "running"
+    finally:
+        service._executor.shutdown(wait=True)
+
+
+def test_start_requires_requested_runtime_profile(tmp_path) -> None:
+    class StandardOnlyAdapter(SequenceGemmaAdapter):
+        def check_setup(self, runtime_profile: RuntimeProfile | None = None) -> SetupStatus:
+            selected = runtime_profile or RuntimeProfile.STANDARD
+            ready = selected == RuntimeProfile.STANDARD
+            return SetupStatus(
+                ready=ready,
+                model_name="gemma4:e4b" if selected == RuntimeProfile.HIGHER_ACCURACY else "gemma4:e2b",
+                runtime_profile=selected,
+                available_runtime_profiles=[RuntimeProfile.STANDARD],
+                mode="test",
+                message="higher accuracy unavailable" if not ready else "ready",
+            )
+
+    adapter = StandardOnlyAdapter([decision(FocusLabel.FOCUSED, "You look settled.")])
+    service = FocusCatcherService(data_root=tmp_path, gemma_adapter=adapter)
+    try:
+        session = service.create_session(SessionConfig(runtime_profile=RuntimeProfile.HIGHER_ACCURACY))
+
+        with pytest.raises(ValueError, match="higher accuracy unavailable"):
+            service.start_session(session.session_id, TransitionRequest())
     finally:
         service._executor.shutdown(wait=True)
 
@@ -254,4 +287,68 @@ def test_save_and_rescan_write_separate_artifacts(tmp_path) -> None:
         assert result.persisted is True
         assert result.revised_summary.total_reviews == 1
     finally:
+        service._executor.shutdown(wait=True)
+
+
+def test_session_review_detail_exposes_full_timeline_and_rescan(tmp_path) -> None:
+    adapter = SequenceGemmaAdapter(
+        [
+            decision(FocusLabel.DRIFTING, "Your attention looks a little loose.", ["looking_away"]),
+            decision(FocusLabel.DRIFTING, "Your attention still looks loose.", ["looking_away"]),
+        ],
+        rescan_decision=decision(FocusLabel.FOCUSED, "This saved frame looks steady."),
+    )
+    service = FocusCatcherService(data_root=tmp_path, gemma_adapter=adapter)
+    try:
+        session = service.create_session(SessionConfig())
+        service.start_session(session.session_id, TransitionRequest())
+        service.submit_review(
+            session.session_id,
+            ReviewInput(frame_sequence=1, camera_image_b64=frame_payload(), force_review=True),
+        )
+        service.submit_review(
+            session.session_id,
+            ReviewInput(frame_sequence=2, camera_image_b64=frame_payload(b"frame-2"), force_review=True),
+        )
+        wait_for_reviews(service, session.session_id, 2)
+        service.stop_session(session.session_id, TransitionRequest())
+        service.save_session(session.session_id)
+        service.rescan_session(session.session_id)
+
+        detail = service.get_session_review(session.session_id)
+
+        assert detail.session.keyframe_count >= 2
+        assert detail.session.rescan_review_count == 2
+        assert len(detail.live_timeline) == 2
+        assert len(detail.rescan_timeline) == 2
+        assert all(review.keyframe_path for review in detail.rescan_timeline)
+    finally:
+        service._executor.shutdown(wait=True)
+
+
+def test_keyframe_route_serves_saved_image(tmp_path) -> None:
+    adapter = SequenceGemmaAdapter([decision(FocusLabel.FOCUSED, "You look settled.")])
+    service = FocusCatcherService(data_root=tmp_path, gemma_adapter=adapter)
+    import focus_catcher.api as api_module
+
+    original_service = api_module.service
+    api_module.service = service
+    try:
+        session = service.create_session(SessionConfig())
+        service.start_session(session.session_id, TransitionRequest())
+        service.submit_review(
+            session.session_id,
+            ReviewInput(frame_sequence=1, camera_image_b64=frame_payload(), force_review=True),
+        )
+        wait_for_reviews(service, session.session_id, 1)
+
+        keyframe_name = Path(service.store.get(session.session_id).review_history[0].keyframe_path).name
+        client = TestClient(app)
+        response = client.get(f"/api/sessions/{session.session_id}/keyframes/{keyframe_name}")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/jpeg")
+        assert response.content
+    finally:
+        api_module.service = original_service
         service._executor.shutdown(wait=True)

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from .models import (
     RescanResult,
     ReviewInput,
     SessionCreateRequest,
+    SessionReviewDetail,
     SessionSnapshot,
     SetupStatus,
     TransitionRequest,
@@ -33,6 +37,8 @@ def healthcheck() -> dict[str, object]:
         "status": "ok",
         "setup_ready": setup.ready,
         "model_name": setup.model_name,
+        "runtime_profile": setup.runtime_profile,
+        "available_runtime_profiles": setup.available_runtime_profiles,
         "message": setup.message,
     }
 
@@ -58,6 +64,29 @@ def get_session(session_id: str) -> SessionSnapshot:
         return service.get_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc
+
+
+@app.get("/api/sessions/{session_id}/review", response_model=SessionReviewDetail)
+def get_session_review(session_id: str) -> SessionReviewDetail:
+    try:
+        return service.get_session_review(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="session not found") from exc
+
+
+@app.get("/api/sessions/{session_id}/keyframes/{filename}")
+def get_session_keyframe(session_id: str, filename: str) -> FileResponse:
+    try:
+        session = service.store.get(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="session not found") from exc
+
+    safe_name = Path(filename).name
+    keyframe_path = Path(session.artifacts.keyframes_dir) / safe_name
+    if not keyframe_path.exists() or not keyframe_path.is_file():
+        raise HTTPException(status_code=404, detail="keyframe not found")
+
+    return FileResponse(keyframe_path, media_type="image/jpeg")
 
 
 @app.post("/api/sessions/{session_id}/start", response_model=SessionSnapshot)

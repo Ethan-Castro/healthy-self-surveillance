@@ -55,3 +55,21 @@ def test_ollama_adapter_strips_data_urls_and_parses_json() -> None:
     assert result.model_name == "gemma4:e2b"
     assert result.label.value == "distracted"
     assert set(result.reasons) == {"screen_off_task", "phone_visible"}
+
+
+def test_ollama_setup_reports_higher_accuracy_availability() -> None:
+    adapter = OllamaGemmaAdapter(model_name="gemma4:e2b", higher_accuracy_model_name="gemma4:e4b")
+
+    def fake_urlopen(url, timeout):  # noqa: ANN001
+        del url, timeout
+        return FakeResponse({"models": [{"name": "gemma4:e2b"}, {"name": "gemma4:e4b"}]})
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        setup = adapter.check_setup()
+
+    assert setup.ready is True
+    assert setup.model_name == "gemma4:e2b"
+    assert [profile.value for profile in setup.available_runtime_profiles] == [
+        "standard",
+        "higher_accuracy",
+    ]

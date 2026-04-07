@@ -19,11 +19,13 @@ from .models import (
     ReviewMode,
     SessionConfig,
     SessionRecord,
+    SessionReviewDetail,
     SessionSnapshot,
     SessionStatus,
     SessionSummary,
     SetupStatus,
     TransitionRequest,
+    RuntimeProfile,
     utcnow,
 )
 from .storage import SessionStore
@@ -49,9 +51,9 @@ class FocusCatcherService:
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="focus-buddy")
         self._cleanup_expired_temporary_sessions()
 
-    def setup_status(self) -> SetupStatus:
+    def setup_status(self, runtime_profile: RuntimeProfile | None = None) -> SetupStatus:
         self._cleanup_expired_temporary_sessions()
-        return self.gemma_adapter.check_setup()
+        return self.gemma_adapter.check_setup(runtime_profile)
 
     def list_sessions(self) -> list[SessionSnapshot]:
         self._cleanup_expired_temporary_sessions()
@@ -77,8 +79,18 @@ class FocusCatcherService:
         self._cleanup_expired_temporary_sessions()
         return self.store.get(session_id).to_snapshot()
 
+    def get_session_review(self, session_id: str) -> SessionReviewDetail:
+        self._cleanup_expired_temporary_sessions()
+        session = self.store.get(session_id)
+        return SessionReviewDetail(
+            session=session.to_snapshot(limit=max(len(session.review_history), 14)),
+            live_timeline=session.review_history,
+            rescan_timeline=session.rescan_history,
+        )
+
     def start_session(self, session_id: str, request: TransitionRequest) -> SessionSnapshot:
-        setup = self.setup_status()
+        session = self.store.get(session_id)
+        setup = self.setup_status(session.config.runtime_profile)
         if not setup.ready:
             raise ValueError(setup.message)
 

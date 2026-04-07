@@ -2,10 +2,13 @@ export type FocusLabel = "focused" | "drifting" | "distracted" | "away";
 export type SessionStatus = "created" | "running" | "paused" | "stopped";
 export type GemmaReviewStatus = "idle" | "reviewing" | "ready" | "error";
 export type ReviewMode = "live" | "rescan";
+export type RuntimeProfile = "standard" | "higher_accuracy";
 
 export interface SetupStatus {
   ready: boolean;
   model_name: string;
+  runtime_profile: RuntimeProfile;
+  available_runtime_profiles: RuntimeProfile[];
   mode: string;
   message: string;
   checked_at: string;
@@ -14,6 +17,7 @@ export interface SetupStatus {
 export interface SessionConfig {
   session_name: string;
   include_screen_analysis: boolean;
+  runtime_profile: RuntimeProfile;
   focused_review_cadence_ms: number;
   active_review_cadence_ms: number;
   temporary_review_window_sec: number;
@@ -60,7 +64,10 @@ export interface SessionArtifacts {
 export interface SessionSnapshot {
   session_id: string;
   session_name: string;
+  created_at: string;
+  updated_at: string;
   status: SessionStatus;
+  runtime_profile: RuntimeProfile;
   current_label: FocusLabel;
   short_reason: string;
   companion_message: string;
@@ -72,6 +79,14 @@ export interface SessionSnapshot {
   summary: SessionSummary;
   recent_reviews: ReviewEntry[];
   can_rescan: boolean;
+  keyframe_count: number;
+  rescan_review_count: number;
+}
+
+export interface SessionReviewDetail {
+  session: SessionSnapshot;
+  live_timeline: ReviewEntry[];
+  rescan_timeline: ReviewEntry[];
 }
 
 export interface RescanResult {

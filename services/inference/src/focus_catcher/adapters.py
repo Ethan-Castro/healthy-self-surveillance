@@ -6,7 +6,14 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib import error, request
 
-from .models import GemmaDecision, ReviewEntry, ReviewInput, SessionConfig, SetupStatus
+from .models import (
+    GemmaDecision,
+    ReviewEntry,
+    ReviewInput,
+    RuntimeProfile,
+    SessionConfig,
+    SetupStatus,
+)
 
 ALLOWED_REASONS = [
     "looking_away",
@@ -20,7 +27,7 @@ ALLOWED_REASONS = [
 
 
 class GemmaAdapter(Protocol):
-    def check_setup(self) -> SetupStatus: ...
+    def check_setup(self, runtime_profile: RuntimeProfile | None = None) -> SetupStatus: ...
 
     def review_live(
         self,
@@ -41,11 +48,19 @@ class GemmaAdapter(Protocol):
 @dataclass(slots=True)
 class MockGemmaAdapter:
     model_name: str = "gemma4:e2b"
+    higher_accuracy_model_name: str = "gemma4:e4b"
+    default_runtime_profile: RuntimeProfile = RuntimeProfile.STANDARD
 
-    def check_setup(self) -> SetupStatus:
+    def check_setup(self, runtime_profile: RuntimeProfile | None = None) -> SetupStatus:
+        selected_profile = runtime_profile or self.default_runtime_profile
         return SetupStatus(
             ready=True,
-            model_name=self.model_name,
+            model_name=self._model_for_profile(selected_profile),
+            runtime_profile=selected_profile,
+            available_runtime_profiles=[
+                RuntimeProfile.STANDARD,
+                RuntimeProfile.HIGHER_ACCURACY,
+            ],
             mode="mock",
             message="Mock mode enabled for development.",
         )
@@ -57,7 +72,7 @@ class MockGemmaAdapter:
         recent_reviews: list[ReviewEntry],
         current_label: str,
     ) -> GemmaDecision:
-        del config, recent_reviews, current_label
+        del recent_reviews, current_label
         if not review_input.camera_image_b64:
             raise ValueError("camera frame is required for live review")
         return GemmaDecision(
@@ -65,7 +80,7 @@ class MockGemmaAdapter:
             confidence=0.74,
             reasons=[],
             note="You look settled on the task right now.",
-            model_name=self.model_name,
+            model_name=self._model_for_profile(config.runtime_profile),
         )
 
     def review_rescan(
@@ -74,49 +89,83 @@ class MockGemmaAdapter:
         config: SessionConfig,
         live_reviews: list[ReviewEntry],
     ) -> GemmaDecision:
-        del image_b64, config, live_reviews
+        del image_b64, live_reviews
         return GemmaDecision(
             label="focused",
             confidence=0.81,
             reasons=[],
             note="The saved frame still looks on task.",
-            model_name=self.model_name,
+            model_name=self._model_for_profile(config.runtime_profile),
         )
+
+    def _model_for_profile(self, runtime_profile: RuntimeProfile) -> str:
+        if runtime_profile == RuntimeProfile.HIGHER_ACCURACY:
+            return self.higher_accuracy_model_name
+        return self.model_name
 
 
 @dataclass(slots=True)
 class OllamaGemmaAdapter:
     model_name: str = "gemma4:e2b"
+    higher_accuracy_model_name: str = "gemma4:e4b"
     base_url: str = "http://127.0.0.1:11434"
     timeout_sec: float = 45.0
     keep_alive: str = "10m"
+    default_runtime_profile: RuntimeProfile = RuntimeProfile.STANDARD
 
-    def check_setup(self) -> SetupStatus:
+    def check_setup(self, runtime_profile: RuntimeProfile | None = None) -> SetupStatus:
+        selected_profile = runtime_profile or self.default_runtime_profile
         try:
             response = request.urlopen(f"{self.base_url}/api/tags", timeout=5)
             payload = json.loads(response.read().decode("utf-8"))
         except error.URLError:
             return SetupStatus(
                 ready=False,
-                model_name=self.model_name,
+                model_name=self._model_for_profile(selected_profile),
+                runtime_profile=selected_profile,
                 mode="ollama",
-                message="Start Ollama first, then make sure gemma4:e2b is available locally.",
+                message="Start Ollama first, then make sure the required Gemma model is available locally.",
             )
 
         names = {model["name"] for model in payload.get("models", [])}
-        if self.model_name not in names:
+        available_profiles = [
+            profile
+            for profile in RuntimeProfile
+            if self._model_for_profile(profile) in names
+        ]
+        required_model = self._model_for_profile(selected_profile)
+        if required_model not in names:
+            if selected_profile == RuntimeProfile.HIGHER_ACCURACY:
+                message = (
+                    f"Higher-accuracy mode is unavailable. Run `ollama run {required_model}` first."
+                )
+            else:
+                message = f"Model {required_model} is missing. Run `ollama run {required_model}` first."
             return SetupStatus(
                 ready=False,
-                model_name=self.model_name,
+                model_name=required_model,
+                runtime_profile=selected_profile,
+                available_runtime_profiles=available_profiles,
                 mode="ollama",
-                message=f"Model {self.model_name} is missing. Run `ollama run {self.model_name}` first.",
+                message=message,
             )
+
+        message = "Gemma is ready for local focus reviews."
+        if (
+            selected_profile == RuntimeProfile.STANDARD
+            and RuntimeProfile.HIGHER_ACCURACY in available_profiles
+        ):
+            message = "Gemma is ready for local focus reviews. Higher accuracy is also available."
+        if selected_profile == RuntimeProfile.HIGHER_ACCURACY:
+            message = "Higher-accuracy Gemma reviews are ready locally."
 
         return SetupStatus(
             ready=True,
-            model_name=self.model_name,
+            model_name=required_model,
+            runtime_profile=selected_profile,
+            available_runtime_profiles=available_profiles,
             mode="ollama",
-            message="Gemma is ready for local focus reviews.",
+            message=message,
         )
 
     def review_live(
@@ -142,6 +191,7 @@ class OllamaGemmaAdapter:
             images.append(self._strip_data_url(review_input.screen_image_b64))
 
         return self._call_ollama(
+            model_name=self._model_for_profile(config.runtime_profile),
             prompt_type="live",
             user_prompt=user_prompt,
             images=images,
@@ -161,14 +211,21 @@ class OllamaGemmaAdapter:
             "Be a bit more careful than the live pass, but still return only the immediate focus state in this frame."
         )
         return self._call_ollama(
+            model_name=self._model_for_profile(config.runtime_profile),
             prompt_type="rescan",
             user_prompt=user_prompt,
             images=[self._strip_data_url(image_b64)],
         )
 
-    def _call_ollama(self, prompt_type: str, user_prompt: str, images: list[str]) -> GemmaDecision:
+    def _call_ollama(
+        self,
+        model_name: str,
+        prompt_type: str,
+        user_prompt: str,
+        images: list[str],
+    ) -> GemmaDecision:
         payload = {
-            "model": self.model_name,
+            "model": model_name,
             "stream": False,
             "keep_alive": self.keep_alive,
             "messages": [
@@ -222,7 +279,7 @@ class OllamaGemmaAdapter:
             confidence=confidence,
             reasons=reasons,
             note=note,
-            model_name=self.model_name,
+            model_name=model_name,
         )
 
     def _extract_json(self, content: str) -> dict[str, object]:
@@ -252,20 +309,43 @@ class OllamaGemmaAdapter:
             return payload.split(",", 1)[1]
         return payload
 
+    def _model_for_profile(self, runtime_profile: RuntimeProfile) -> str:
+        if runtime_profile == RuntimeProfile.HIGHER_ACCURACY:
+            return self.higher_accuracy_model_name
+        return self.model_name
+
 
 def build_gemma_adapter() -> GemmaAdapter:
     mode = os.getenv("FOCUS_CATCHER_GEMMA_BACKEND", "ollama").strip().lower() or "ollama"
     model_name = os.getenv("FOCUS_CATCHER_GEMMA_MODEL", "gemma4:e2b").strip() or "gemma4:e2b"
+    higher_accuracy_model_name = (
+        os.getenv("FOCUS_CATCHER_GEMMA_HIGHER_ACCURACY_MODEL", "gemma4:e4b").strip()
+        or "gemma4:e4b"
+    )
+    runtime_profile_raw = (
+        os.getenv("FOCUS_CATCHER_DEFAULT_RUNTIME_PROFILE", RuntimeProfile.STANDARD.value).strip().lower()
+        or RuntimeProfile.STANDARD.value
+    )
     base_url = os.getenv("FOCUS_CATCHER_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     timeout_sec = float(os.getenv("FOCUS_CATCHER_OLLAMA_TIMEOUT_SEC", "45").strip() or "45")
     keep_alive = os.getenv("FOCUS_CATCHER_OLLAMA_KEEP_ALIVE", "10m").strip() or "10m"
+    try:
+        default_runtime_profile = RuntimeProfile(runtime_profile_raw)
+    except ValueError:
+        default_runtime_profile = RuntimeProfile.STANDARD
 
     if mode == "mock":
-        return MockGemmaAdapter(model_name=model_name)
+        return MockGemmaAdapter(
+            model_name=model_name,
+            higher_accuracy_model_name=higher_accuracy_model_name,
+            default_runtime_profile=default_runtime_profile,
+        )
 
     return OllamaGemmaAdapter(
         model_name=model_name,
+        higher_accuracy_model_name=higher_accuracy_model_name,
         base_url=base_url,
         timeout_sec=timeout_sec,
         keep_alive=keep_alive,
+        default_runtime_profile=default_runtime_profile,
     )

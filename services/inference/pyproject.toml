@@ -11,6 +11,9 @@ dependencies = [
   "uvicorn>=0.35.0,<1.0.0"
 ]
 
+[project.scripts]
+focus-buddy-benchmark = "focus_catcher.benchmark:main"
+
 [dependency-groups]
 dev = [
   "httpx>=0.28.0,<1.0.0",

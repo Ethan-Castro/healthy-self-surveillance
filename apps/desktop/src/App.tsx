@@ -3,6 +3,8 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   createSession,
   fetchSession,
+  fetchSessionReview,
+  fetchSessions,
   fetchSetup,
   rescanSession,
   saveSession,
@@ -13,8 +15,10 @@ import type {
   FocusLabel,
   GemmaReviewStatus,
   RescanResult,
+  ReviewMode,
   ReviewInput,
   SessionConfig,
+  SessionReviewDetail,
   SessionSnapshot,
   SetupStatus,
 } from "./types";
@@ -23,10 +27,12 @@ const FAST_POLL_MS = 350;
 const FOCUSED_REVIEW_MS = 2000;
 const ACTIVE_REVIEW_MS = 1000;
 const EARLY_REVIEW_MIN_MS = 700;
+const REVIEW_LIBRARY_POLL_MS = 5000;
 
 const DEFAULT_CONFIG: SessionConfig = {
   session_name: "Focus Buddy Session",
   include_screen_analysis: false,
+  runtime_profile: "standard",
   focused_review_cadence_ms: FOCUSED_REVIEW_MS,
   active_review_cadence_ms: ACTIVE_REVIEW_MS,
   temporary_review_window_sec: 600,
@@ -121,6 +127,33 @@ function labelCopy(label: FocusLabel): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+function formatSessionStamp(iso: string): string {
+  return new Date(iso).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function reasonsCopy(reasons: string[]): string {
+  if (!reasons.length) {
+    return "No strong reason tag saved.";
+  }
+  return reasons.map((reason) => reason.replaceAll("_", " ")).join(" · ");
+}
+
+function keyframeSrc(sessionId: string | null | undefined, keyframePath: string | null | undefined): string | null {
+  if (!sessionId || !keyframePath) {
+    return null;
+  }
+  const filename = keyframePath.split("/").pop();
+  if (!filename) {
+    return null;
+  }
+  return `http://127.0.0.1:8000/api/sessions/${encodeURIComponent(sessionId)}/keyframes/${encodeURIComponent(filename)}`;
+}
+
 function reviewStatusCopy(status: GemmaReviewStatus | null | undefined): {
   tone: "ok" | "warn" | "idle";
   label: string;
@@ -147,7 +180,11 @@ function statusCopy(status: SessionSnapshot["status"] | null | undefined): strin
 export default function App() {
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
+  const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
   const [rescan, setRescan] = useState<RescanResult | null>(null);
+  const [reviewDetail, setReviewDetail] = useState<SessionReviewDetail | null>(null);
+  const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
+  const [reviewTimelineMode, setReviewTimelineMode] = useState<ReviewMode>("live");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState(DEFAULT_CONFIG.session_name);
@@ -180,7 +217,49 @@ export default function App() {
     }, 4000);
 
     return () => window.clearInterval(interval);
-  }, [setupCheck]);
+  }, []);
+
+  const refreshSessionLibrary = useEffectEvent(async (preferredSessionId?: string | null) => {
+    try {
+      const nextSessions = (await fetchSessions()).filter((candidate) => candidate.summary.total_reviews > 0);
+      setSessions(nextSessions);
+      setError(null);
+
+      const requestedSessionId = preferredSessionId ?? reviewSessionId;
+      const nextSelectedId =
+        requestedSessionId && nextSessions.some((candidate) => candidate.session_id === requestedSessionId)
+          ? requestedSessionId
+          : nextSessions[0]?.session_id ?? null;
+
+      setReviewSessionId(nextSelectedId);
+      if (!nextSelectedId) {
+        setReviewDetail(null);
+        if (reviewTimelineMode === "rescan") {
+          setReviewTimelineMode("live");
+        }
+        return;
+      }
+
+      const detail = await fetchSessionReview(nextSelectedId);
+      setReviewDetail(detail);
+      setError(null);
+      if (reviewTimelineMode === "rescan" && detail.rescan_timeline.length === 0) {
+        setReviewTimelineMode("live");
+      }
+    } catch (caught) {
+      const nextError = caught instanceof Error ? caught.message : "Failed to refresh saved sessions";
+      setError(nextError);
+    }
+  });
+
+  useEffect(() => {
+    void refreshSessionLibrary();
+    const interval = window.setInterval(() => {
+      void refreshSessionLibrary();
+    }, REVIEW_LIBRARY_POLL_MS);
+
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!cameraVideoRef.current) {
@@ -239,12 +318,14 @@ export default function App() {
           lastReviewSubmittedAtRef.current = now;
           lastSignatureRef.current = currentSignature;
           setSession(nextSnapshot);
+          setError(null);
           return;
         }
       }
 
       const nextSnapshot = await fetchSession(session.session_id);
       setSession(nextSnapshot);
+      setError(null);
     } catch (caught) {
       const nextError = caught instanceof Error ? caught.message : "Failed to sync session";
       setError(nextError);
@@ -284,7 +365,7 @@ export default function App() {
       }
       requestInFlightRef.current = false;
     };
-  }, [session?.session_id, session?.status, syncLoop]);
+  }, [session?.session_id, session?.status]);
 
   async function withBusy<T>(message: string, action: () => Promise<T>): Promise<T | undefined> {
     setBusy(message);
@@ -348,12 +429,14 @@ export default function App() {
       ...DEFAULT_CONFIG,
       session_name: sessionName.trim() || DEFAULT_CONFIG.session_name,
       include_screen_analysis: includeScreenAnalysis,
+      runtime_profile: setup?.runtime_profile ?? DEFAULT_CONFIG.runtime_profile,
     });
     const started = await transitionSession(created.session_id, "start");
     frameSequenceRef.current = 0;
     lastReviewSubmittedAtRef.current = 0;
     lastSignatureRef.current = null;
     setSession(started);
+    await refreshSessionLibrary(started.session_id);
   }
 
   async function pauseSession() {
@@ -372,6 +455,7 @@ export default function App() {
     setSession(stopped);
     stopCamera();
     stopScreen();
+    await refreshSessionLibrary(stopped.session_id);
   }
 
   const currentLabel = session?.current_label ?? "focused";
@@ -396,6 +480,11 @@ export default function App() {
   const endDisabled = busy !== null || !session || session.status === "stopped";
   const saveDisabled = busy !== null || !session || session.is_saved;
   const rescanDisabled = busy !== null || !session || !session.can_rescan;
+  const selectedTimeline =
+    reviewTimelineMode === "rescan" && reviewDetail?.rescan_timeline.length
+      ? reviewDetail.rescan_timeline
+      : (reviewDetail?.live_timeline ?? []);
+  const reviewMoments = selectedTimeline.slice(-12).reverse();
 
   return (
     <main className="buddy-shell">
@@ -519,6 +608,7 @@ export default function App() {
               }
               const saved = await saveSession(session.session_id);
               setSession(saved);
+              await refreshSessionLibrary(saved.session_id);
             })}
             disabled={saveDisabled}
           >
@@ -533,6 +623,8 @@ export default function App() {
               setRescan(nextRescan);
               const refreshed = await fetchSession(session.session_id);
               setSession(refreshed);
+              setReviewTimelineMode("rescan");
+              await refreshSessionLibrary(session.session_id);
             })}
             disabled={rescanDisabled}
           >
@@ -590,6 +682,10 @@ export default function App() {
             <p>Common reason</p>
             <strong>{session?.summary.most_common_reason ?? "none yet"}</strong>
           </article>
+          <article>
+            <p>Keyframes</p>
+            <strong>{session?.keyframe_count ?? 0}</strong>
+          </article>
         </div>
         {rescan ? (
           <div className="rescan-block">
@@ -600,6 +696,102 @@ export default function App() {
             </p>
           </div>
         ) : null}
+      </section>
+
+      <section className="buddy-card library-card">
+        <div className="section-header">
+          <h2>Saved moments</h2>
+          <span className="status-chip idle">{sessions.length} sessions</span>
+        </div>
+        <p className="setup-message">
+          Review saved moments after the fact through keyframes, timeline notes, and rescans. Focus Buddy does not store full continuous video.
+        </p>
+        <div className="library-list">
+          {sessions.length ? (
+            sessions.map((candidate) => (
+              <button
+                key={candidate.session_id}
+                className={`library-item ${reviewSessionId === candidate.session_id ? "selected" : ""}`}
+                onClick={() => void withBusy("Loading session review", async () => {
+                  setReviewTimelineMode("live");
+                  await refreshSessionLibrary(candidate.session_id);
+                })}
+                disabled={busy !== null}
+              >
+                <span className="library-title">{candidate.session_name}</span>
+                <span className="library-meta">
+                  {formatSessionStamp(candidate.created_at)} · {candidate.summary.total_reviews} reviews · {candidate.keyframe_count} keyframes
+                </span>
+              </button>
+            ))
+          ) : (
+            <div className="empty-state">Finish a session and save it to review the timeline later.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="buddy-card review-card">
+        <div className="section-header">
+          <h2>After-session review</h2>
+          <span className="status-chip idle">{reviewDetail ? `${selectedTimeline.length} moments` : "No session selected"}</span>
+        </div>
+        {reviewDetail ? (
+          <>
+            <p className="setup-message">
+              {reviewDetail.session.session_name} · {formatSessionStamp(reviewDetail.session.created_at)}
+            </p>
+            <div className="review-toggle-row">
+              <button
+                className={`toggle-pill ${reviewTimelineMode === "live" ? "selected" : ""}`}
+                onClick={() => setReviewTimelineMode("live")}
+              >
+                Live review
+              </button>
+              {reviewDetail.rescan_timeline.length ? (
+                <button
+                  className={`toggle-pill ${reviewTimelineMode === "rescan" ? "selected" : ""}`}
+                  onClick={() => setReviewTimelineMode("rescan")}
+                >
+                  Rescan
+                </button>
+              ) : null}
+            </div>
+            <p className="inline-note">Saved keyframes and review entries only. Full session footage is not recorded.</p>
+            <div className="review-list">
+              {reviewMoments.length ? (
+                reviewMoments.map((review) => {
+                  const previewSrc = keyframeSrc(reviewDetail.session.session_id, review.keyframe_path);
+                  return (
+                    <article key={`${review.mode}-${review.sequence}-${review.timestamp}`} className="review-item">
+                      {previewSrc ? (
+                        <img
+                          src={previewSrc}
+                          alt={`Keyframe for ${labelCopy(review.label)} at ${formatTime(review.timestamp)}`}
+                          className="review-thumb"
+                        />
+                      ) : (
+                        <div className="review-thumb review-thumb-empty">No keyframe</div>
+                      )}
+                      <div className="review-copy">
+                        <div className="review-topline">
+                          <strong>{labelCopy(review.label)}</strong>
+                          <span>{formatTime(review.timestamp)}</span>
+                        </div>
+                        <p>{review.note}</p>
+                        <p className="review-buddy-note">{review.buddy_note}</p>
+                        <p className="review-reasons">{reasonsCopy(review.reasons)}</p>
+                      </div>
+                    </article>
+                  );
+                })
+              ) : (
+                <div className="empty-state">No review moments are available for this timeline yet.</div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="empty-state">Select a finished session to review saved moments after the fact.</div>
+        )}
       </section>
     </main>
   );
