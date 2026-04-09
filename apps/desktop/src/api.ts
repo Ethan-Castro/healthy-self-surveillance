@@ -1,13 +1,21 @@
 import type {
+  AnalyticsPreferences,
+  ContextCaptureRequest,
+  DayAnalyticsView,
+  ExperimentComparisonView,
+  InsightCard,
   RescanResult,
+  RemarkableRequest,
   ReviewInput,
   SessionConfig,
+  SessionAnalyticsDetail,
   SessionReviewDetail,
   SessionSnapshot,
   SetupStatus,
+  WeekAnalyticsView,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
   if (!headers) {
@@ -79,6 +87,17 @@ export function fetchSetup(): Promise<SetupStatus> {
   return api<SetupStatus>("/api/setup");
 }
 
+export function fetchPreferences(): Promise<AnalyticsPreferences> {
+  return api<AnalyticsPreferences>("/api/preferences");
+}
+
+export function updatePreferences(preferences: AnalyticsPreferences): Promise<AnalyticsPreferences> {
+  return api<AnalyticsPreferences>("/api/preferences", {
+    method: "PUT",
+    body: JSON.stringify({ preferences }),
+  });
+}
+
 export function createSession(config: SessionConfig): Promise<SessionSnapshot> {
   return api<SessionSnapshot>("/api/sessions", {
     method: "POST",
@@ -96,6 +115,10 @@ export function fetchSession(sessionId: string): Promise<SessionSnapshot> {
 
 export function fetchSessionReview(sessionId: string): Promise<SessionReviewDetail> {
   return api<SessionReviewDetail>(`/api/sessions/${sessionId}/review`);
+}
+
+export function fetchSessionAnalytics(sessionId: string): Promise<SessionAnalyticsDetail> {
+  return api<SessionAnalyticsDetail>(`/api/sessions/${sessionId}/analytics`);
 }
 
 export function transitionSession(
@@ -128,4 +151,60 @@ export function rescanSession(sessionId: string): Promise<RescanResult> {
   return api<RescanResult>(`/api/sessions/${sessionId}/rescan`, {
     method: "POST",
   });
+}
+
+export function submitContext(
+  sessionId: string,
+  context: ContextCaptureRequest,
+): Promise<SessionSnapshot> {
+  return api<SessionSnapshot>(`/api/sessions/${sessionId}/context`, {
+    method: "POST",
+    body: JSON.stringify(context),
+  });
+}
+
+export function markSessionRemarkable(
+  sessionId: string,
+  payload: RemarkableRequest,
+): Promise<SessionSnapshot> {
+  return api<SessionSnapshot>(`/api/sessions/${sessionId}/remarkable`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function markMomentRemarkable(
+  sessionId: string,
+  sequence: number,
+  payload: RemarkableRequest,
+): Promise<SessionSnapshot> {
+  return api<SessionSnapshot>(`/api/sessions/${sessionId}/moments/${sequence}/remarkable`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function clearMomentRemarkable(
+  sessionId: string,
+  sequence: number,
+): Promise<SessionSnapshot> {
+  return api<SessionSnapshot>(`/api/sessions/${sessionId}/moments/${sequence}/remarkable`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchTodayAnalytics(): Promise<DayAnalyticsView> {
+  return api<DayAnalyticsView>("/api/analytics/today");
+}
+
+export function fetchWeekAnalytics(): Promise<WeekAnalyticsView> {
+  return api<WeekAnalyticsView>("/api/analytics/week");
+}
+
+export function fetchExperimentAnalytics(): Promise<ExperimentComparisonView> {
+  return api<ExperimentComparisonView>("/api/analytics/experiments");
+}
+
+export function fetchAnalyticsInsights(): Promise<InsightCard[]> {
+  return api<InsightCard[]>("/api/analytics/insights");
 }

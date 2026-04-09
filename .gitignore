@@ -12,3 +12,5 @@ apps/desktop/dist
 apps/desktop/.vite
 .gradle
 apps/android/.idea
+xcuserdata/
+*.xcuserstate

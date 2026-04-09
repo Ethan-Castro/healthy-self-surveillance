@@ -12,6 +12,7 @@ Model strategy in the current repo:
 The current repo includes:
 
 - `apps/desktop`: Electron + React sidecar app with camera setup, live buddy state, rolling review log, session save, and session rescan.
+- `apps/macos-native`: native SwiftUI macOS app scaffold that talks to the same local FastAPI backend and auto-launches it in Debug.
 - `services/inference`: FastAPI + Python 3.13 local service that manages session state, sends frames to local `gemma4:e2b`, writes `reviews.ndjson`, saves keyframes, and runs slower rescans.
 - `apps/android`: an older Android scaffold that is not part of the current v1 consumer flow.
 
@@ -43,6 +44,47 @@ uv run uvicorn focus_catcher.api:app --app-dir src --reload --port 8000
 cd apps/desktop
 pnpm dev
 ```
+
+## Native macOS app
+
+The repo now includes a real native macOS app project:
+
+- Xcode project: `apps/macos-native/FocusBuddyMac.xcodeproj`
+- app sources: `apps/macos-native/FocusBuddyMac/FocusBuddyMac`
+- project generator: `apps/macos-native/tools/generate_xcodeproj.rb`
+
+The native app keeps the current FastAPI backend and HTTP contract. In Debug it auto-launches the repo-local backend from `services/inference`, so normal native development does not require running `uvicorn` manually.
+
+Current toolchain status:
+
+- local toolchain here: `Xcode 16.3` / `macOS 15.4 SDK`
+- result: the native app uses `real SwiftUI/AppKit` with native material surfaces today
+- upgrade path: actual Apple `Liquid Glass` APIs require the `macOS 26 SDK`
+
+Use the native app:
+
+```bash
+pnpm macos:open
+```
+
+Rebuild the project from the repo root:
+
+```bash
+pnpm macos:build
+```
+
+Regenerate the Xcode project if you add or move Swift source files:
+
+```bash
+pnpm macos:generate
+```
+
+Migration status:
+
+- `Electron` remains in the repo as the fallback implementation
+- the new native app already has separate native tabs for `Live`, `Stats`, `Review`, `Patterns`, and `Settings`
+- the native app already includes a floating native orb panel, native camera capture, backend auto-launch, native notifications, and backend-driven analytics surfaces
+- the bottom navigation and orb use native materials now and are structured so they can move to true Liquid Glass APIs once the SDK is upgraded
 
 ## Verification
 

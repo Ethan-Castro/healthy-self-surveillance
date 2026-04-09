@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch
 
 from focus_catcher.adapters import OllamaGemmaAdapter
-from focus_catcher.models import ReviewInput, SessionConfig
+from focus_catcher.models import AnalysisMode, ReviewInput, RuntimeProfile, SessionConfig
 
 
 class FakeResponse:
@@ -69,7 +69,200 @@ def test_ollama_setup_reports_higher_accuracy_availability() -> None:
 
     assert setup.ready is True
     assert setup.model_name == "gemma4:e2b"
-    assert [profile.value for profile in setup.available_runtime_profiles] == [
-        "standard",
-        "higher_accuracy",
-    ]
+    assert RuntimeProfile.STANDARD in setup.available_runtime_profiles
+    assert RuntimeProfile.HIGHER_ACCURACY in setup.available_runtime_profiles
+
+
+def test_ollama_adapter_rewrites_generic_annotation_note() -> None:
+    adapter = OllamaGemmaAdapter(model_name="gemma4:e2b")
+    review_input = ReviewInput(camera_image_b64="data:image/jpeg;base64,abc123")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        del request, timeout
+        return FakeResponse(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "label": "focused",
+                            "confidence": 0.78,
+                            "reasons": [],
+                            "note": "Looks focused.",
+                        }
+                    )
+                }
+            }
+        )
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        result = adapter.review_live(
+            review_input,
+            config=SessionConfig(analysis_mode=AnalysisMode.ANNOTATION),
+            recent_reviews=[],
+            current_label="focused",
+        )
+
+    assert result.note == "You seem focused — your eyes and posture are on task."
+
+
+def test_ollama_adapter_preserves_short_specific_note() -> None:
+    adapter = OllamaGemmaAdapter(model_name="gemma4:e2b")
+    review_input = ReviewInput(camera_image_b64="data:image/jpeg;base64,abc123")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        del request, timeout
+        return FakeResponse(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "label": "distracted",
+                            "confidence": 0.85,
+                            "reasons": ["phone_visible"],
+                            "note": "Phone visible nearby.",
+                        }
+                    )
+                }
+            }
+        )
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        result = adapter.review_live(
+            review_input,
+            config=SessionConfig(analysis_mode=AnalysisMode.ANNOTATION),
+            recent_reviews=[],
+            current_label="focused",
+        )
+
+    assert result.note == "Phone visible nearby."
+
+
+def test_ollama_adapter_allows_steady_with_context() -> None:
+    adapter = OllamaGemmaAdapter(model_name="gemma4:e2b")
+    review_input = ReviewInput(camera_image_b64="data:image/jpeg;base64,abc123")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        del request, timeout
+        return FakeResponse(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "label": "focused",
+                            "confidence": 0.80,
+                            "reasons": [],
+                            "note": "Looks steady on the screen with hands on keyboard.",
+                        }
+                    )
+                }
+            }
+        )
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        result = adapter.review_live(
+            review_input,
+            config=SessionConfig(analysis_mode=AnalysisMode.ANNOTATION),
+            recent_reviews=[],
+            current_label="focused",
+        )
+
+    assert result.note == "Looks steady on the screen with hands on keyboard."
+
+
+def test_ollama_setup_reports_edge_availability() -> None:
+    adapter = OllamaGemmaAdapter(
+        model_name="gemma4:e2b",
+        edge_model_name="hf.co/LiquidAI/LFM2.5-VL-450M-GGUF:Q4_0",
+    )
+
+    def fake_urlopen(url, timeout):  # noqa: ANN001
+        del url, timeout
+        return FakeResponse(
+            {"models": [{"name": "gemma4:e2b"}, {"name": "hf.co/LiquidAI/LFM2.5-VL-450M-GGUF:Q4_0"}]}
+        )
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        setup = adapter.check_setup(RuntimeProfile.EDGE)
+
+    assert setup.ready is True
+    assert setup.model_name == "hf.co/LiquidAI/LFM2.5-VL-450M-GGUF:Q4_0"
+    assert RuntimeProfile.EDGE in setup.available_runtime_profiles
+    assert RuntimeProfile.STANDARD in setup.available_runtime_profiles
+
+
+def test_ollama_adapter_edge_profile_uses_correct_model() -> None:
+    adapter = OllamaGemmaAdapter(
+        model_name="gemma4:e2b",
+        edge_model_name="hf.co/LiquidAI/LFM2.5-VL-450M-GGUF:Q4_0",
+    )
+    review_input = ReviewInput(camera_image_b64="data:image/jpeg;base64,abc123")
+    captured_payload: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        del timeout
+        captured_payload.update(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "label": "focused",
+                            "confidence": 0.75,
+                            "reasons": [],
+                            "note": "Looking at screen.",
+                        }
+                    )
+                }
+            }
+        )
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        result = adapter.review_live(
+            review_input,
+            config=SessionConfig(runtime_profile=RuntimeProfile.EDGE),
+            recent_reviews=[],
+            current_label="focused",
+        )
+
+    assert captured_payload["model"] == "hf.co/LiquidAI/LFM2.5-VL-450M-GGUF:Q4_0"
+    assert result.model_name == "hf.co/LiquidAI/LFM2.5-VL-450M-GGUF:Q4_0"
+
+
+def test_ollama_adapter_adds_phone_camera_context_for_iphone_source() -> None:
+    adapter = OllamaGemmaAdapter(model_name="gemma4:e2b")
+    review_input = ReviewInput(
+        camera_image_b64="data:image/jpeg;base64,abc123",
+        capture_source="iphone_camera",
+    )
+    captured_payload: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        del timeout
+        captured_payload.update(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "label": "focused",
+                            "confidence": 0.82,
+                            "reasons": [],
+                            "note": "Your posture looks steady.",
+                        }
+                    )
+                }
+            }
+        )
+
+    with patch("focus_catcher.adapters.request.urlopen", side_effect=fake_urlopen):
+        adapter.review_live(
+            review_input,
+            config=SessionConfig(analysis_mode=AnalysisMode.ANNOTATION),
+            recent_reviews=[],
+            current_label="focused",
+        )
+
+    system_message = captured_payload["messages"][0]["content"]
+    user_message = captured_payload["messages"][1]["content"]
+    assert "iPhone companion camera" in system_message
+    assert "capture_source=iphone_camera" in user_message

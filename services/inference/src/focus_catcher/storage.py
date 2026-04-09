@@ -5,7 +5,21 @@ import json
 from pathlib import Path
 from threading import RLock
 
-from .models import ReviewEntry, ReviewMode, SessionArtifacts, SessionRecord, SessionSummary
+from .models import (
+    AnalyticsPreferences,
+    ContextSnapshot,
+    DayRollup,
+    InsightCard,
+    RemarkableIndexEntry,
+    ReviewEntry,
+    ReviewMode,
+    SessionArtifacts,
+    SessionEvent,
+    SessionMetrics,
+    SessionRecord,
+    SessionSummary,
+    WeekRollup,
+)
 
 
 class SessionStore:
@@ -28,10 +42,21 @@ class SessionStore:
             keyframes_dir=str(keyframes_dir),
             rescan_file=str(session_dir / "rescan.ndjson"),
             summary_file=str(session_dir / "summary.json"),
+            events_file=str(session_dir / "events.ndjson"),
+            contexts_file=str(session_dir / "contexts.ndjson"),
+            metrics_file=str(session_dir / "metrics.json"),
+            insights_file=str(session_dir / "insights.json"),
         )
-        Path(artifacts.reviews_file).touch(exist_ok=True)
-        Path(artifacts.rescan_file).touch(exist_ok=True)
-        Path(artifacts.summary_file).touch(exist_ok=True)
+        for path in (
+            artifacts.reviews_file,
+            artifacts.rescan_file,
+            artifacts.summary_file,
+            artifacts.events_file,
+            artifacts.contexts_file,
+            artifacts.metrics_file,
+            artifacts.insights_file,
+        ):
+            Path(path).touch(exist_ok=True)
         return artifacts
 
     def list(self) -> list[SessionRecord]:
@@ -68,6 +93,22 @@ class SessionStore:
                 handle.write(review.model_dump_json())
                 handle.write("\n")
 
+    def append_event(self, session_id: str, event: SessionEvent) -> None:
+        session = self.get(session_id)
+        path = Path(session.artifacts.events_file)
+        with self._lock:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(event.model_dump_json())
+                handle.write("\n")
+
+    def append_context(self, session_id: str, context: ContextSnapshot) -> None:
+        session = self.get(session_id)
+        path = Path(session.artifacts.contexts_file)
+        with self._lock:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(context.model_dump_json())
+                handle.write("\n")
+
     def replace_rescan(self, session_id: str, entries: list[ReviewEntry]) -> None:
         session = self.get(session_id)
         path = Path(session.artifacts.rescan_file)
@@ -82,6 +123,19 @@ class SessionStore:
         path = Path(session.artifacts.summary_file)
         with self._lock:
             path.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+
+    def write_metrics(self, session_id: str, metrics: SessionMetrics) -> None:
+        session = self.get(session_id)
+        path = Path(session.artifacts.metrics_file)
+        with self._lock:
+            path.write_text(metrics.model_dump_json(indent=2), encoding="utf-8")
+
+    def write_insights(self, session_id: str, insights: list[InsightCard]) -> None:
+        session = self.get(session_id)
+        path = Path(session.artifacts.insights_file)
+        with self._lock:
+            payload = [card.model_dump(mode="json") for card in insights]
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def write_keyframe(
         self,
@@ -104,6 +158,28 @@ class SessionStore:
             for entry in keyframes_dir.glob("*"):
                 entry.unlink(missing_ok=True)
             Path(session.artifacts.rescan_file).write_text("", encoding="utf-8")
+            Path(session.artifacts.contexts_file).write_text("", encoding="utf-8")
+
+    def prune_raw_evidence(
+        self,
+        session_id: str,
+        *,
+        keep_sequences: set[int],
+        clear_contexts: bool,
+    ) -> None:
+        session = self.get(session_id)
+        keyframes_dir = Path(session.artifacts.keyframes_dir)
+        with self._lock:
+            for keyframe in keyframes_dir.glob("*.jpg"):
+                prefix = keyframe.name.split("-", 1)[0]
+                try:
+                    sequence = int(prefix)
+                except ValueError:
+                    sequence = -1
+                if sequence not in keep_sequences:
+                    keyframe.unlink(missing_ok=True)
+            if clear_contexts:
+                Path(session.artifacts.contexts_file).write_text("", encoding="utf-8")
 
     def load_existing(self) -> None:
         with self._lock:
@@ -114,6 +190,13 @@ class SessionStore:
                 if not session_file.exists():
                     continue
                 payload = json.loads(session_file.read_text(encoding="utf-8"))
+                artifacts = payload.setdefault("artifacts", {})
+                artifacts.setdefault("events_file", str(session_dir / "events.ndjson"))
+                artifacts.setdefault("contexts_file", str(session_dir / "contexts.ndjson"))
+                artifacts.setdefault("metrics_file", str(session_dir / "metrics.json"))
+                artifacts.setdefault("insights_file", str(session_dir / "insights.json"))
+                for path_key in ("events_file", "contexts_file", "metrics_file", "insights_file"):
+                    Path(artifacts[path_key]).touch(exist_ok=True)
                 session = SessionRecord.model_validate(payload)
                 self._sessions[session.id] = session
 
@@ -121,3 +204,46 @@ class SessionStore:
         if "," in payload and payload.startswith("data:"):
             return payload.split(",", 1)[1]
         return payload
+
+
+class AnalyticsStore:
+    def __init__(self, base_dir: Path) -> None:
+        self.base_dir = base_dir
+        self.days_dir = self.base_dir / "days"
+        self.weeks_dir = self.base_dir / "weeks"
+        self.preferences_path = self.base_dir / "preferences.json"
+        self.remarkable_index_path = self.base_dir / "remarkable-index.json"
+        self._lock = RLock()
+
+        self.days_dir.mkdir(parents=True, exist_ok=True)
+        self.weeks_dir.mkdir(parents=True, exist_ok=True)
+
+    def load_preferences(self) -> AnalyticsPreferences:
+        with self._lock:
+            if not self.preferences_path.exists():
+                preferences = AnalyticsPreferences()
+                self.save_preferences(preferences)
+                return preferences
+            payload = json.loads(self.preferences_path.read_text(encoding="utf-8"))
+            return AnalyticsPreferences.model_validate(payload)
+
+    def save_preferences(self, preferences: AnalyticsPreferences) -> AnalyticsPreferences:
+        with self._lock:
+            stored = preferences.model_copy(deep=True)
+            self.preferences_path.write_text(stored.model_dump_json(indent=2), encoding="utf-8")
+            return stored
+
+    def write_day_rollup(self, rollup: DayRollup) -> None:
+        with self._lock:
+            path = self.days_dir / f"{rollup.date}.json"
+            path.write_text(rollup.model_dump_json(indent=2), encoding="utf-8")
+
+    def write_week_rollup(self, rollup: WeekRollup) -> None:
+        with self._lock:
+            path = self.weeks_dir / f"{rollup.week_id}.json"
+            path.write_text(rollup.model_dump_json(indent=2), encoding="utf-8")
+
+    def write_remarkable_index(self, entries: list[RemarkableIndexEntry]) -> None:
+        with self._lock:
+            payload = [entry.model_dump(mode="json") for entry in entries]
+            self.remarkable_index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

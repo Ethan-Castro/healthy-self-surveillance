@@ -12,6 +12,9 @@
     "desktop:dev": "pnpm --dir apps/desktop dev",
     "desktop:build": "pnpm --dir apps/desktop build",
     "desktop:typecheck": "pnpm --dir apps/desktop typecheck",
+    "macos:generate": "ruby apps/macos-native/tools/generate_xcodeproj.rb",
+    "macos:open": "open apps/macos-native/FocusBuddyMac.xcodeproj",
+    "macos:build": "xcodebuild -project apps/macos-native/FocusBuddyMac.xcodeproj -scheme FocusBuddyMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build",
     "inference:dev": "cd services/inference && uv run uvicorn focus_catcher.api:app --app-dir src --reload --port 8000",
     "inference:benchmark": "cd services/inference && uv run focus-buddy-benchmark",
     "inference:test": "cd services/inference && uv run pytest"
